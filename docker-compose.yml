@@ -1,0 +1,108 @@
+services:
+  kafka:
+    image: bitnamilegacy/kafka:3.6.1
+    container_name: kafka
+    ports:
+      - "9092:9092"
+    environment:
+      # KRaft settings
+      - KAFKA_CFG_NODE_ID=0
+      - KAFKA_CFG_PROCESS_ROLES=controller,broker
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@kafka:9093
+      # Listeners
+      - KAFKA_CFG_LISTENERS=INTERNAL://:29092,EXTERNAL://:9092,CONTROLLER://:9093
+      - KAFKA_CFG_ADVERTISED_LISTENERS=INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=INTERNAL
+      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
+    volumes:
+      - kafka_data:/bitnami/kafka
+
+  spark-master:
+    image: bitnamilegacy/spark:3.5.0
+    container_name: spark-master
+    environment:
+      - SPARK_MODE=master
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+      - KAFKA_BROKER=kafka:29092
+    ports:
+      - "9090:9090"
+      - "7077:7077"
+    volumes:
+      - .:/app
+
+  spark-worker:
+    image: bitnamilegacy/spark:3.5.0
+    container_name: spark-worker
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_MEMORY=2G
+      - SPARK_WORKER_CORES=2
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+      - KAFKA_BROKER=kafka:29092
+    volumes:
+      - .:/app
+    depends_on:
+      - spark-master
+
+  producer:
+    image: python:3.9-slim
+    container_name: producer
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: bash -c "pip install -r producer/requirements.txt && python -u producer/producer.py"
+    environment:
+      - KAFKA_BROKER=kafka:29092
+      - TOPIC_NAME=transactions
+    depends_on:
+      - kafka
+
+  spark-job:
+    image: bitnamilegacy/spark:3.5.0
+    container_name: spark-job
+    environment:
+      - KAFKA_BROKER=kafka:29092
+      - INPUT_TOPIC=transactions
+      - VALID_OUTPUT_TOPIC=transactions_valid
+      - DLQ_TOPIC=transactions_dlq
+      - CHECKPOINT_DIR=/app/src/checkpoints/streaming_job
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: >
+      bash -c "
+        echo 'Menunggu Kafka broker aktif...';
+        sleep 8;
+        spark-submit --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 /app/streaming/spark_streaming_job.py
+      "
+    depends_on:
+      - spark-master
+      - kafka
+
+  dashboard:
+    image: python:3.9-slim
+    container_name: dashboard
+    ports:
+      - "5001:5000"
+    volumes:
+      - ./src/dashboard:/app
+    working_dir: /app
+    command: bash -c "pip install -r requirements.txt && python -u app.py"
+    environment:
+      - KAFKA_BROKER=kafka:29092
+      - VALID_TOPIC=transactions_valid
+      - DLQ_TOPIC=transactions_dlq
+    depends_on:
+      - kafka
+
+volumes:
+  kafka_data:

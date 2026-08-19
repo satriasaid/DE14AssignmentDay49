@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Transaction Pipeline Monitor</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0a0e17;
+            --bg-secondary: #131b2e;
+            --bg-card: rgba(19, 27, 46, 0.7);
+            --border-color: rgba(255, 255, 255, 0.08);
+            --text-primary: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --accent-green: #10b981;
+            --accent-green-bg: rgba(16, 185, 129, 0.12);
+            --accent-red: #ef4444;
+            --accent-red-bg: rgba(239, 68, 68, 0.12);
+            --accent-blue: #3b82f6;
+            --accent-purple: #8b5cf6;
+            --accent-amber: #f59e0b;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: 'Inter', sans-serif;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            padding: 24px;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding-bottom: 20px;
+            border-bottom: 1px solid var(--border-color);
+            margin-bottom: 24px;
+        }
+
+        .header-title h1 {
+            font-size: 24px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #60a5fa 0%, #a78bfa 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .header-title p {
+            color: var(--text-secondary);
+            font-size: 13px;
+            margin-top: 4px;
+        }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 14px;
+            border-radius: 9999px;
+            font-size: 12px;
+            font-weight: 600;
+            background-color: rgba(16, 185, 129, 0.1);
+            color: var(--accent-green);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+
+        .pulse-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: var(--accent-green);
+            box-shadow: 0 0 10px var(--accent-green);
+            animation: pulse 1.8s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.4; transform: scale(1.2); }
+        }
+
+        /* Metric Grid */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .metric-card {
+            background: var(--bg-card);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 18px 20px;
+            transition: transform 0.2s ease, border-color 0.2s ease;
+        }
+
+        .metric-card:hover {
+            transform: translateY(-2px);
+            border-color: rgba(255, 255, 255, 0.18);
+        }
+
+        .metric-label {
+            font-size: 12px;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+
+        .metric-value {
+            font-size: 26px;
+            font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .metric-value.total { color: #60a5fa; }
+        .metric-value.valid { color: var(--accent-green); }
+        .metric-value.dlq { color: var(--accent-red); }
+        .metric-value.rate { color: var(--accent-purple); }
+
+        /* Main Content Grid */
+        .main-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            flex: 1;
+        }
+
+        @media (max-width: 992px) {
+            .main-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .panel {
+            background: var(--bg-card);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            max-height: 580px;
+        }
+
+        .panel-header {
+            padding: 14px 18px;
+            background: rgba(255, 255, 255, 0.02);
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .panel-header h2 {
+            font-size: 14px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .badge-count {
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 600;
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .feed-container {
+            padding: 12px 16px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            flex: 1;
+        }
+
+        .feed-item {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 12px;
+            font-size: 13px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(-8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .feed-item.valid {
+            border-left: 4px solid var(--accent-green);
+        }
+
+        .feed-item.dlq {
+            border-left: 4px solid var(--accent-red);
+            background: rgba(239, 68, 68, 0.04);
+        }
+
+        .item-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 600;
+        }
+
+        .user-tag {
+            color: #93c5fd;
+        }
+
+        .amount-tag {
+            color: var(--text-primary);
+        }
+
+        .item-bottom {
+            display: flex;
+            justify-content: space-between;
+            color: var(--text-secondary);
+            font-size: 11px;
+        }
+
+        .error-tag {
+            color: #fca5a5;
+            font-weight: 500;
+            background: var(--accent-red-bg);
+            padding: 2px 6px;
+            border-radius: 4px;
+            margin-top: 4px;
+            font-size: 11px;
+        }
+
+        .source-pill {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: rgba(255, 255, 255, 0.06);
+            font-size: 10px;
+            text-transform: uppercase;
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="header-title">
+            <h1>⚡ Real-Time Transaction Pipeline Monitor</h1>
+            <p>Apache Kafka ➔ PySpark Structured Streaming ➔ Real-Time Routing (Valid vs DLQ)</p>
+        </div>
+        <div id="statusBadge" class="status-badge">
+            <span class="pulse-dot"></span>
+            <span id="statusText">Connecting...</span>
+        </div>
+    </header>
+
+    <div class="metrics-grid">
+        <div class="metric-card">
+            <div class="metric-label">Running Total Valid (Rp)</div>
+            <div id="metricRunningTotal" class="metric-value total">Rp 0</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Valid Transactions</div>
+            <div id="metricValidCount" class="metric-value valid">0</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">DLQ / Invalid Events</div>
+            <div id="metricDlqCount" class="metric-value dlq">0</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Validation Pass Rate</div>
+            <div id="metricPassRate" class="metric-value rate">100%</div>
+        </div>
+    </div>
+
+    <div class="main-grid">
+        <!-- Valid Topic Panel -->
+        <div class="panel">
+            <div class="panel-header">
+                <h2>
+                    <span>🟢 Topic: <code style="color:#10b981;">transactions_valid</code></span>
+                </h2>
+                <span id="validBadgeCount" class="badge-count">0 items</span>
+            </div>
+            <div id="validFeed" class="feed-container">
+                <!-- Live valid transaction items will appear here -->
+            </div>
+        </div>
+
+        <!-- DLQ Topic Panel -->
+        <div class="panel">
+            <div class="panel-header">
+                <h2>
+                    <span>🔴 Topic: <code style="color:#ef4444;">transactions_dlq</code> (Dead Letter Queue)</span>
+                </h2>
+                <span id="dlqBadgeCount" class="badge-count">0 items</span>
+            </div>
+            <div id="dlqFeed" class="feed-container">
+                <!-- Live invalid/DLQ items will appear here -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let runningTotal = 0;
+        let validCount = 0;
+        let dlqCount = 0;
+
+        const validFeed = document.getElementById('validFeed');
+        const dlqFeed = document.getElementById('dlqFeed');
+        const statusBadge = document.getElementById('statusBadge');
+        const statusText = document.getElementById('statusText');
+        const metricRunningTotal = document.getElementById('metricRunningTotal');
+        const metricValidCount = document.getElementById('metricValidCount');
+        const metricDlqCount = document.getElementById('metricDlqCount');
+        const metricPassRate = document.getElementById('metricPassRate');
+        const validBadgeCount = document.getElementById('validBadgeCount');
+        const dlqBadgeCount = document.getElementById('dlqBadgeCount');
+
+        function formatIDR(amount) {
+            if (amount === null || amount === undefined || isNaN(amount)) return 'Rp 0';
+            return 'Rp ' + Number(amount).toLocaleString('id-ID');
+        }
+
+        function updateMetrics() {
+            metricRunningTotal.innerText = formatIDR(runningTotal);
+            metricValidCount.innerText = validCount.toLocaleString();
+            metricDlqCount.innerText = dlqCount.toLocaleString();
+            validBadgeCount.innerText = `${validCount} items`;
+            dlqBadgeCount.innerText = `${dlqCount} items`;
+
+            const total = validCount + dlqCount;
+            if (total > 0) {
+                const rate = ((validCount / total) * 100).toFixed(1);
+                metricPassRate.innerText = `${rate}%`;
+            }
+        }
+
+        const eventSource = new EventSource('/stream');
+
+        eventSource.onopen = function() {
+            statusText.innerText = 'Streaming Active';
+            statusBadge.style.color = '#10b981';
+            statusBadge.style.borderColor = 'rgba(16, 185, 129, 0.3)';
+        };
+
+        eventSource.onmessage = function(event) {
+            try {
+                if (!event.data || event.data.trim() === '') return;
+                const message = JSON.parse(event.data);
+                const topic = message.topic;
+                const data = message.data;
+
+                if (topic === 'transactions_valid' || data.is_valid === true) {
+                    validCount++;
+                    runningTotal += Number(data.amount || 0);
+
+                    const el = document.createElement('div');
+                    el.className = 'feed-item valid';
+                    el.innerHTML = `
+                        <div class="item-top">
+                            <span class="user-tag">${data.user_id || 'UNKNOWN'}</span>
+                            <span class="amount-tag">${formatIDR(data.amount)}</span>
+                        </div>
+                        <div class="item-bottom">
+                            <span>🕒 ${data.timestamp || 'N/A'}</span>
+                            <span class="source-pill">${data.source || 'N/A'}</span>
+                        </div>
+                    `;
+                    validFeed.prepend(el);
+                    if (validFeed.children.length > 50) validFeed.removeChild(validFeed.lastChild);
+
+                } else if (topic === 'transactions_dlq' || data.is_valid === false) {
+                    dlqCount++;
+
+                    const el = document.createElement('div');
+                    el.className = 'feed-item dlq';
+                    el.innerHTML = `
+                        <div class="item-top">
+                            <span class="user-tag" style="color:#fca5a5;">${data.user_id || 'NULL'}</span>
+                            <span class="amount-tag">${data.amount !== null && data.amount !== undefined ? formatIDR(data.amount) : 'NULL'}</span>
+                        </div>
+                        <div class="item-bottom">
+                            <span>🕒 ${data.timestamp || 'NULL'}</span>
+                            <span class="source-pill" style="background:rgba(239,68,68,0.2);">${data.source || 'UNKNOWN'}</span>
+                        </div>
+                        <div class="error-tag">⚠️ ${data.error_reason || 'Validation Failed'}</div>
+                    `;
+                    dlqFeed.prepend(el);
+                    if (dlqFeed.children.length > 50) dlqFeed.removeChild(dlqFeed.lastChild);
+                }
+
+                updateMetrics();
+            } catch (err) {
+                console.error("Parse error:", err);
+            }
+        };
+
+        eventSource.onerror = function() {
+            statusText.innerText = 'Reconnecting...';
+            statusBadge.style.color = '#f59e0b';
+            statusBadge.style.borderColor = 'rgba(245, 158, 11, 0.3)';
+        };
+    </script>
+</body>
+</html>
