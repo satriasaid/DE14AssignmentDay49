@@ -4,10 +4,10 @@ from datetime import datetime, timezone
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col, from_json, to_timestamp, window, count, sum as _sum, avg as _avg,
-    when, lit, trim, struct, to_json, current_timestamp, date_format, row_number
+    when, lit, trim, struct, to_json, current_timestamp, date_format, row_number, isnan
 )
 from pyspark.sql.types import (
-    StructType, StructField, StringType, DoubleType, TimestampType, BooleanType
+    StructType, StructField, StringType, DoubleType, TimestampType, BooleanType, IntegerType
 )
 from pyspark.sql.window import Window
 
@@ -79,7 +79,6 @@ def evaluate_batch(batch_df, batch_id):
     # ---------------------------------------------------------------------
     # Step 1: Intra-batch Duplicate Detection using Window Function
     # ---------------------------------------------------------------------
-    # Detect duplicates within the same batch (partition by user_id and timestamp)
     window_spec = Window.partitionBy("user_id", "timestamp").orderBy(
         when(col("event_time").isNotNull(), col("event_time")).otherwise(lit("1970-01-01"))
     )
@@ -87,12 +86,6 @@ def evaluate_batch(batch_df, batch_id):
 
     # ---------------------------------------------------------------------
     # Step 2: Evaluate 5 Mandatory Validation Rules + Watermark/Late Check
-    # ---------------------------------------------------------------------
-    # Rule 1: Mandatory Field Check (user_id, amount, timestamp, source not null/empty)
-    # Rule 2: Type Validation (timestamp parseable to ISO timestamp, amount is valid numeric)
-    # Rule 3: Range Validation for Amount (1 <= amount <= 10,000,000)
-    # Rule 4: Source Validation (source in ['mobile', 'web', 'pos'])
-    # Rule 5: Duplicate Detection (user_id + timestamp) & Late Event check (> 3 mins)
     # ---------------------------------------------------------------------
     watermark_cutoff_seconds = 3 * 60  # 3 minutes watermark tolerance
 
@@ -105,7 +98,7 @@ def evaluate_batch(batch_df, batch_id):
         .when(col("source").isNull() | (trim(col("source")) == ""), lit("Missing mandatory field: source"))
         # 2. Type Validations
         .when(col("event_time").isNull(), lit("Type validation failed: invalid/unparseable timestamp"))
-        .when(col("amount").isNaN(), lit("Type validation failed: amount is NaN"))
+        .when(isnan(col("amount")), lit("Type validation failed: amount is NaN"))
         # 3. Range Validation (1 to 10,000,000)
         .when((col("amount") < 1.0) | (col("amount") > 10000000.0), lit("Range validation failed: amount must be between 1 and 10,000,000"))
         # 4. Source Validation ('mobile', 'web', 'pos')
@@ -121,9 +114,8 @@ def evaluate_batch(batch_df, batch_id):
     )
 
     # Cross-batch deduplication using driver cache:
-    # Convert records to check against historical seen keys
     rows = validated_df.collect()
-    updated_rows = []
+    updated_tuples = []
     
     batch_valid_count = 0
     batch_dlq_count = 0
@@ -134,28 +126,39 @@ def evaluate_batch(batch_df, batch_id):
         u_id = row_dict.get("user_id")
         t_stamp = row_dict.get("timestamp")
         err = row_dict.get("error_reason")
+        is_valid = False
         
         # If passed initial validation, check cross-batch seen_keys
         if err is None:
             key = (u_id, t_stamp)
             if key in cumulative_state["seen_keys"]:
                 err = "Duplicate transaction: duplicate user_id and timestamp (cross-batch)"
-                row_dict["error_reason"] = err
-                row_dict["is_valid"] = False
+                is_valid = False
                 batch_dlq_count += 1
             else:
                 cumulative_state["seen_keys"].add(key)
-                # Keep cache bounded to last 10,000 items
                 if len(cumulative_state["seen_keys"]) > 10000:
                     cumulative_state["seen_keys"].pop()
-                row_dict["is_valid"] = True
+                is_valid = True
                 batch_valid_count += 1
-                batch_valid_amount += (row_dict.get("amount") or 0.0)
+                batch_valid_amount += float(row_dict.get("amount") or 0.0)
         else:
-            row_dict["is_valid"] = False
+            is_valid = False
             batch_dlq_count += 1
 
-        updated_rows.append(row_dict)
+        amt_val = float(row_dict["amount"]) if row_dict.get("amount") is not None else None
+        dup_rank = int(row_dict.get("intra_batch_dup_rank") or 1)
+
+        updated_tuples.append((
+            u_id,
+            amt_val,
+            t_stamp,
+            row_dict.get("source"),
+            row_dict.get("event_time"),
+            dup_rank,
+            err,
+            is_valid
+        ))
 
     # Update cumulative running metrics
     cumulative_state["running_total"] += batch_valid_amount
@@ -163,7 +166,17 @@ def evaluate_batch(batch_df, batch_id):
     cumulative_state["total_dlq_count"] += batch_dlq_count
 
     spark = batch_df.sparkSession
-    processed_df = spark.createDataFrame(updated_rows)
+    processed_schema = StructType([
+        StructField("user_id", StringType(), True),
+        StructField("amount", DoubleType(), True),
+        StructField("timestamp", StringType(), True),
+        StructField("source", StringType(), True),
+        StructField("event_time", TimestampType(), True),
+        StructField("intra_batch_dup_rank", IntegerType(), True),
+        StructField("error_reason", StringType(), True),
+        StructField("is_valid", BooleanType(), True),
+    ])
+    processed_df = spark.createDataFrame(updated_tuples, schema=processed_schema)
 
     # ---------------------------------------------------------------------
     # Step 3: Route Valid Data -> Kafka Topic: transactions_valid
